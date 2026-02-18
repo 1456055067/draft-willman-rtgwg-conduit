@@ -1,0 +1,2512 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!DOCTYPE rfc [
+  <!ENTITY nbsp "&#160;">
+  <!ENTITY zwsp "&#8203;">
+  <!ENTITY nbhy "&#8209;">
+  <!ENTITY wj "&#8288;">
+]>
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude" submissionType="IETF"
+  docName="draft-willman-rtgwg-conduit-latest" category="std" ipr="trust200902" obsoletes=""
+  updates=""
+  xml:lang="en" symRefs="true" sortRefs="false" tocInclude="true" version="3">
+  <front>
+    <title>Underlay for IPsec Transport</title>
+    <seriesInfo name="Internet-Draft" value="draft-willman-rtgwg-conduit-latest" />
+    <author fullname="John Edward Willman V" surname="Willman">
+      <organization>Department of the Air Force</organization>
+      <address>
+        <postal>
+          <street>1800 Air Force Pentagon</street>
+          <city>Washington</city>
+          <region>DC</region>
+          <code>20330</code>
+          <country>USA</country>
+        </postal>
+        <phone>+1 786 994 3023</phone>
+        <email>john.willman.1@us.af.mil</email>
+        <uri>https://www.linkedin.com/in/johnewillmanv</uri>
+      </address>
+    </author>
+    <date year="2026" month="1" day="30" />
+    <area>General</area>
+    <workgroup>Routing Area Working Group</workgroup>
+    <abstract>
+      <t>
+        This document specifies CONDUIT, a tunnel fabric management protocol
+        for tactical and enterprise networks operating over heterogeneous
+        Wide Area Network (WAN) links. CONDUIT automates the lifecycle
+        management of IPsec tunnels, monitors tunnel health through active
+        probing, and publishes quality metrics to enable Segment Routing
+        over IPv6 (SRv6) based traffic engineering.</t>
+      <t>
+        CONDUIT follows a strict separation of concerns: it manages the
+        underlay tunnel fabric while delegating all traffic engineering
+        decisions to SRv6. This architecture simplifies network operations,
+        enables rapid adaptation to changing WAN conditions, and leverages
+        standard SRv6 capabilities including Flexible Algorithm (Flex-Algo)
+        and Topology-Independent Loop-Free Alternate (TI-LFA).</t>
+      <t>
+        The protocol is fully programmable via gRPC and mandates compliance
+        with Commercial National Security Algorithm Suite 2.0 (CNSA 2.0)
+        cryptographic requirements.</t>
+    </abstract>
+  </front>
+  <middle>
+    <section anchor="sect-1" numbered="true" toc="default">
+      <name>Introduction</name>
+      <section anchor="sect-1.1" numbered="true" toc="default">
+        <name>Problem Statement</name>
+        <t>
+          Modern tactical and enterprise networks increasingly operate over
+          diverse Wide Area Network (WAN) links with varying characteristics:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Satellite Communications (SATCOM): Both Geostationary (GEO) with
+              approximately 600ms round-trip latency and Low Earth Orbit (LEO)
+              with 20-40ms latency, limited bandwidth, and weather sensitivity.</t>
+          </li>
+          <li>
+            <t>Line-of-Sight (LOS) Radio: Low latency, high mobility, but
+              terrain-dependent coverage.</t>
+          </li>
+          <li>
+            <t>Cellular Networks (LTE/5G): Variable quality, broad coverage, but
+              may traverse untrusted infrastructure.</t>
+          </li>
+          <li>
+            <t>High Frequency (HF) Radio: Very low bandwidth but extended range
+              with atmospheric effects.</t>
+          </li>
+          <li>
+            <t>Wired Connections: When available at fixed installations.</t>
+          </li>
+        </ul>
+        <t>
+          Managing IPsec tunnels across these heterogeneous links presents
+          significant operational challenges:</t>
+        <ol spacing="normal" type="1">
+          <li>
+            <t>Links appear and disappear as network elements move or
+              environmental conditions change.</t>
+          </li>
+          <li>
+            <t>Link quality varies dramatically and unpredictably.</t>
+          </li>
+          <li>
+            <t>Multiple paths to each destination may exist simultaneously.</t>
+          </li>
+          <li>
+            <t>Failover must complete within sub-second timeframes to maintain
+              voice and command-and-control (C2) applications.</t>
+          </li>
+          <li>
+            <t>All traffic must be encrypted using approved cryptographic
+              algorithms.</t>
+          </li>
+        </ol>
+        <t>
+          Existing approaches typically couple tunnel management with traffic
+          engineering decisions, creating unnecessary complexity and limiting
+          interoperability with standard routing protocols.</t>
+      </section>
+      <section anchor="sect-1.2" numbered="true" toc="default">
+        <name>Design Philosophy</name>
+        <t>
+          CONDUIT adheres to a strict separation of concerns:</t>
+        <ul spacing="normal">
+          <li>
+            <t>SRv6 Traffic Engineering Layer: Responsible for all path selection
+              decisions, including Flexible Algorithm computation, fast reroute
+              via TI-LFA, traffic class steering, and load balancing across
+              equal-cost paths.</t>
+          </li>
+          <li>
+            <t>CONDUIT Tunnel Fabric Layer: Responsible for tunnel lifecycle
+              management (creation, maintenance, deletion), health monitoring
+              through active probing, metric publication to enable SRv6-based
+              decisions, and IPsec security association management.</t>
+          </li>
+        </ul>
+        <t>
+          This separation ensures that CONDUIT does not duplicate functionality
+          available in standard SRv6 implementations while providing essential
+          tunnel management capabilities that SRv6 requires but does not
+          natively provide.</t>
+      </section>
+      <section anchor="sect-1.3" numbered="true" toc="default">
+        <name>Design Goals</name>
+        <t>
+          The following quantitative goals guide CONDUIT's design:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Parameter</th>
+              <th align="left"> Requirement</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Tunnel Scale</td>
+              <td align="left">Support for 1000+ tunnels per node</td>
+            </tr>
+            <tr>
+              <td align="left">Failover Detection</td>
+              <td align="left">Less than 500ms to detect tunnel failure</td>
+            </tr>
+            <tr>
+              <td align="left">Metric Publish Rate</td>
+              <td align="left">1 Hz default, 10 Hz burst capability</td>
+            </tr>
+            <tr>
+              <td align="left">Cryptographic Suite</td>
+              <td align="left">Full CNSA 2.0 compliance</td>
+            </tr>
+            <tr>
+              <td align="left">API Coverage</td>
+              <td align="left">100% of functionality accessible via gRPC</td>
+            </tr>
+            <tr>
+              <td align="left">Probe Overhead</td>
+              <td align="left">Less than 1% of available bandwidth</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section anchor="sect-1.4" numbered="true" toc="default">
+        <name>Scope</name>
+        <t>
+          This document specifies:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Tunnel lifecycle management procedures</t>
+          </li>
+          <li>
+            <t>Health monitoring through active probing</t>
+          </li>
+          <li>
+            <t>Metric calculation and publishing mechanisms</t>
+          </li>
+          <li>
+            <t>Control protocol message formats</t>
+          </li>
+          <li>
+            <t>Integration requirements for SRv6-based traffic engineering</t>
+          </li>
+          <li>
+            <t>Cryptographic requirements for CNSA 2.0 compliance</t>
+          </li>
+        </ul>
+        <t>
+          This document does not specify:</t>
+        <ul spacing="normal">
+          <li>
+            <t>SRv6 data plane operations (covered by <xref target="RFC8986" />)</t>
+          </li>
+          <li>
+            <t>Flexible Algorithm computation (covered by
+              draft-ietf-lsr-flex-algo)</t>
+          </li>
+          <li>
+            <t>IPsec key exchange procedures (covered by <xref target="RFC7296" />)</t>
+          </li>
+          <li>
+            <t>IGP extensions for traffic engineering (covered by <xref target="RFC8570"
+              />)</t>
+          </li>
+        </ul>
+      </section>
+    </section>
+    <section anchor="sect-2" numbered="true" toc="default">
+      <name>Conventions and Terminology</name>
+      <section anchor="sect-2.1" numbered="true" toc="default">
+        <name>Requirements Language</name>
+        <t> The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD
+          NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be
+          interpreted as described in BCP 14 <xref target="RFC2119" /> <xref
+            target="RFC8174" /> when, and only when, they appear in all capitals, as shown here.</t>
+      </section>
+      <section anchor="sect-2.2" numbered="true" toc="default">
+        <name>Definitions</name>
+        <dl newline="false" spacing="normal" indent="1">
+          <dt>Node:</dt>
+          <dd>
+            <t>
+              A device implementing the CONDUIT protocol.
+            </t>
+            <t />
+          </dd>
+          <dt>Peer:</dt>
+          <dd>
+            <t>
+              A remote node with which tunnels are established.
+            </t>
+            <t />
+          </dd>
+          <dt>WAN:</dt>
+          <dd>
+            <t>
+              A Wide Area Network interface, either physical or virtual,
+            </t>
+            <t>
+              capable of carrying IP traffic to remote peers.
+            </t>
+          </dd>
+          <dt>Tunnel:</dt>
+          <dd>
+            <t>
+              An IPsec-protected communication path between two WAN
+            </t>
+            <t>
+              interfaces on different nodes.
+            </t>
+          </dd>
+          <dt>Fabric:</dt>
+          <dd>
+            <t>
+              The complete set of tunnels managed by a CONDUIT node.
+            </t>
+            <t />
+          </dd>
+          <dt>Probe:</dt>
+          <dd>
+            <t>
+              A measurement packet transmitted through a tunnel to assess
+            </t>
+            <t>
+              its quality characteristics.
+            </t>
+          </dd>
+          <dt>Metric:</dt>
+          <dd>
+            <t>
+              A quantitative measure of tunnel quality, such as latency,
+            </t>
+            <t>
+              jitter, or packet loss.
+            </t>
+          </dd>
+          <dt>Locator:</dt>
+          <dd>
+            <t>
+              The SRv6 locator block assigned to a node, typically a /48
+            </t>
+            <t>
+              IPv6 prefix.
+            </t>
+          </dd>
+        </dl>
+      </section>
+      <section anchor="sect-2.3" numbered="true" toc="default">
+        <name>Abbreviations</name>
+        <dl newline="false" spacing="normal" indent="1">
+          <dt>CNSA:</dt>
+          <dd>
+            <t>
+              Commercial National Security Algorithm Suite
+            </t>
+            <t />
+          </dd>
+          <dt>ECMP:</dt>
+          <dd>
+            <t>
+              Equal-Cost Multi-Path
+            </t>
+            <t />
+          </dd>
+          <dt>ESP:</dt>
+          <dd>
+            <t>
+              Encapsulating Security Payload
+            </t>
+            <t />
+          </dd>
+          <dt>Flex-Algo:</dt>
+          <dd>
+            <t>
+              Flexible Algorithm
+            </t>
+            <t />
+          </dd>
+          <dt>GEO:</dt>
+          <dd>
+            <t>
+              Geostationary Earth Orbit
+            </t>
+            <t />
+          </dd>
+          <dt>gRPC:</dt>
+          <dd>
+            <t>
+              gRPC Remote Procedure Call
+            </t>
+            <t />
+          </dd>
+          <dt>HMAC:</dt>
+          <dd>
+            <t>
+              Hash-based Message Authentication Code
+            </t>
+            <t />
+          </dd>
+          <dt>IGP:</dt>
+          <dd>
+            <t>
+              Interior Gateway Protocol
+            </t>
+            <t />
+          </dd>
+          <dt>IKE:</dt>
+          <dd>
+            <t>
+              Internet Key Exchange
+            </t>
+            <t />
+          </dd>
+          <dt>LEO:</dt>
+          <dd>
+            <t>
+              Low Earth Orbit
+            </t>
+            <t />
+          </dd>
+          <dt>LOS:</dt>
+          <dd>
+            <t>
+              Line-of-Sight
+            </t>
+            <t />
+          </dd>
+          <dt>mTLS:</dt>
+          <dd>
+            <t>
+              Mutual Transport Layer Security
+            </t>
+            <t />
+          </dd>
+          <dt>RTT:</dt>
+          <dd>
+            <t>
+              Round-Trip Time
+            </t>
+            <t />
+          </dd>
+          <dt>SA:</dt>
+          <dd>
+            <t>
+              Security Association
+            </t>
+            <t />
+          </dd>
+          <dt>SPI:</dt>
+          <dd>
+            <t>
+              Security Parameter Index
+            </t>
+            <t />
+          </dd>
+          <dt>SRLG:</dt>
+          <dd>
+            <t>
+              Shared Risk Link Group
+            </t>
+            <t />
+          </dd>
+          <dt>SRv6:</dt>
+          <dd>
+            <t>
+              Segment Routing over IPv6
+            </t>
+            <t />
+          </dd>
+          <dt>TE:</dt>
+          <dd>
+            <t>
+              Traffic Engineering
+            </t>
+            <t />
+          </dd>
+        </dl>
+        <t>
+          TI-LFA: Topology-Independent Loop-Free Alternate</t>
+      </section>
+    </section>
+    <section anchor="sect-3" numbered="true" toc="default">
+      <name>Architecture</name>
+      <section anchor="sect-3.1" numbered="true" toc="default">
+        <name>System Overview</name>
+        <t>
+          A CONDUIT deployment consists of the following components:</t>
+        <ul spacing="normal">
+          <li>
+            <t>SDN Controller (Optional): Provides centralized policy management,
+              SRv6 policy configuration, and network-wide optimization.
+              Communicates with CONDUIT nodes via gRPC.</t>
+          </li>
+          <li>
+            <t>SRv6 Data Plane: Executes traffic engineering decisions using
+              standard SRv6 mechanisms including IS-IS or OSPFv3 with SRv6
+              extensions, Flexible Algorithm for constraint-based path
+              computation, and TI-LFA for sub-50ms fast reroute.</t>
+          </li>
+          <li>
+            <t>CONDUIT Daemon: Manages the tunnel fabric, comprising the Tunnel
+              Lifecycle Manager for creating and deleting tunnels, Health
+              Monitor for probing tunnel quality, Metric Publisher for feeding
+              metrics to SRv6/IGP, and the gRPC API Server for external control.</t>
+          </li>
+          <li>
+            <t>IKEv2/IPsec Subsystem: Handles cryptographic operations and
+              security association management. CONDUIT interfaces with this
+              subsystem but does not implement cryptographic operations directly.</t>
+          </li>
+          <li>
+            <t>WAN Interfaces: Physical or virtual interfaces connecting to
+              various transport networks.</t>
+          </li>
+        </ul>
+      </section>
+      <section anchor="sect-3.2" numbered="true" toc="default">
+        <name>Tunnel Fabric Concept</name>
+        <t>
+          CONDUIT creates tunnels between WAN interfaces according to the
+          configured tunnel policy. In a full mesh configuration with N local
+          WANs and M remote WANs to a given peer, CONDUIT establishes up to
+          N x M tunnels.</t>
+        <t>
+          For example, consider a node with three WAN interfaces (SATCOM, LOS
+          Radio, and LTE) connecting to a peer also having three WAN
+          interfaces. A full mesh fabric would comprise nine tunnels:</t>
+        <ul spacing="normal">
+          <li>
+            <t>SATCOM to SATCOM</t>
+          </li>
+          <li>
+            <t>SATCOM to LOS</t>
+          </li>
+          <li>
+            <t>SATCOM to LTE</t>
+          </li>
+          <li>
+            <t>LOS to SATCOM</t>
+          </li>
+          <li>
+            <t>LOS to LOS</t>
+          </li>
+          <li>
+            <t>LOS to LTE</t>
+          </li>
+          <li>
+            <t>LTE to SATCOM</t>
+          </li>
+          <li>
+            <t>LTE to LOS</t>
+          </li>
+          <li>
+            <t>LTE to LTE</t>
+          </li>
+        </ul>
+        <t>
+          Each tunnel becomes a distinct interface visible to the SRv6 data
+          plane and IGP. The IGP sees multiple adjacencies to the same peer,
+          each with potentially different metrics based on tunnel quality.</t>
+      </section>
+      <section anchor="sect-3.3" numbered="true" toc="default">
+        <name>Separation of Concerns</name>
+        <t>
+          CONDUIT explicitly delegates the following functions to SRv6:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Function</th>
+              <th align="left"> Mechanism</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Path Selection</td>
+              <td align="left">SRv6 Flex-Algo, IGP SPF computation</td>
+            </tr>
+            <tr>
+              <td align="left">Traffic Classification</td>
+              <td align="left">SRv6 Policy color matching</td>
+            </tr>
+            <tr>
+              <td align="left">Load Balancing</td>
+              <td align="left">IGP ECMP across equal-metric tunnels</td>
+            </tr>
+            <tr>
+              <td align="left">Fast Reroute</td>
+              <td align="left">TI-LFA pre-computed backup paths</td>
+            </tr>
+            <tr>
+              <td align="left">QoS Marking</td>
+              <td align="left">SRv6 Traffic Class field</td>
+            </tr>
+          </tbody>
+        </table>
+        <t keepWithPrevious="true"> CONDUIT is responsible for:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Function</th>
+              <th align="left"> Mechanism</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Tunnel Creation</td>
+              <td align="left">Automatic based on WAN availability</td>
+            </tr>
+            <tr>
+              <td align="left">Tunnel Deletion</td>
+              <td align="left">Automatic when WAN becomes unavailable</td>
+            </tr>
+            <tr>
+              <td align="left">Health Monitoring</td>
+              <td align="left">Active probing with configurable rates</td>
+            </tr>
+            <tr>
+              <td align="left">Metric Calculation</td>
+              <td align="left">RTT, jitter, loss measurement</td>
+            </tr>
+            <tr>
+              <td align="left">Metric Publishing</td>
+              <td align="left">Interface metrics, IGP TE extensions</td>
+            </tr>
+            <tr>
+              <td align="left">IPsec SA Management</td>
+              <td align="left">Via IKEv2 with CNSA 2.0 parameters</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </section>
+    <section anchor="sect-4" numbered="true" toc="default">
+      <name>Cryptographic Requirements</name>
+      <section anchor="sect-4.1" numbered="true" toc="default">
+        <name>CNSA 2.0 Compliance</name>
+        <t>
+          CONDUIT implementations MUST comply with the Commercial National
+          Security Algorithm Suite 2.0 (CNSA 2.0) as specified by the National
+          Security Agency for protection of classified information.</t>
+        <t>
+          Implementations intended for use in environments not requiring CNSA
+          2.0 compliance MAY support additional algorithms but MUST default to
+          CNSA 2.0 algorithms and MUST provide configuration options to enforce
+          CNSA 2.0-only operation.</t>
+      </section>
+      <section anchor="sect-4.2" numbered="true" toc="default">
+        <name>Mandatory Algorithms</name>
+        <t>
+          The following algorithms are REQUIRED:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Function</th>
+              <th align="left"> Algorithm</th>
+              <th align="left"> Parameters</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Symmetric Encryption</td>
+              <td align="left">AES-256-GCM </td>
+              <td align="left">256-bit key, 96-bit IV, 128-bit authentication tag</td>
+            </tr>
+            <tr>
+              <td align="left">Key Exchange</td>
+              <td align="left">ECDH</td>
+              <td align="left">P-384 curve (secp384r1)</td>
+            </tr>
+            <tr>
+              <td align="left">Digital Signature</td>
+              <td align="left">ECDSA</td>
+              <td align="left">P-384 curve (secp384r1)</td>
+            </tr>
+            <tr>
+              <td align="left">Hash Function</td>
+              <td align="left">SHA-384</td>
+              <td align="left">384-bit output</td>
+            </tr>
+            <tr>
+              <td align="left">Message Authentication</td>
+              <td align="left">HMAC-SHA-384 <xref target="RFC4868" /></td>
+              <td align="left">384-bit output </td>
+            </tr>
+            <tr>
+              <td align="left">Pseudo-Random Function (IKEv2)</td>
+              <td align="left">HMAC-SHA-384</td>
+              <td align="left">Per <xref target="RFC4868" />
+              </td>
+            </tr>
+            <tr>
+              <td align="left">Key Derivation</td>
+              <td align="left">HKDF-SHA-384</td>
+              <td align="left">Per <xref target="RFC5869" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section anchor="sect-4.3" numbered="true" toc="default">
+        <name>Prohibited Algorithms</name>
+        <t>
+          CONDUIT implementations MUST reject configuration of the following
+          algorithms and MUST NOT negotiate their use:</t>
+        <ul spacing="normal">
+          <li>
+            <t>AES with key sizes less than 256 bits (AES-128, AES-192)</t>
+          </li>
+          <li>
+            <t>Triple DES (3DES) and DES</t>
+          </li>
+          <li>
+            <t>SHA-1 and SHA-256 for authentication or integrity</t>
+          </li>
+          <li>
+            <t>MD5</t>
+          </li>
+          <li>
+            <t>RSA with key sizes less than 3072 bits</t>
+          </li>
+          <li>
+            <t>Diffie-Hellman groups with less than 3072-bit modulus</t>
+          </li>
+          <li>
+            <t>ECDH or ECDSA with curves smaller than P-384</t>
+          </li>
+          <li>
+            <t>ChaCha20-Poly1305 (not approved for CNSA)</t>
+          </li>
+        </ul>
+        <t>
+          Implementations MUST generate a configuration error and refuse to
+          operate if prohibited algorithms are specified.</t>
+      </section>
+      <section anchor="sect-4.4" numbered="true" toc="default">
+        <name>IPsec Profile</name>
+        <t>
+          CONDUIT implementations MUST configure IPsec with the following
+          parameters:</t>
+        <t>
+          IKEv2 Parameters:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Version: IKEv2 only (version 1 MUST NOT be used)</t>
+          </li>
+          <li>
+            <t>Encryption: AES-256-GCM with 16-octet ICV (aes256gcm16)</t>
+          </li>
+          <li>
+            <t>PRF: HMAC-SHA-384 (prf-hmac-sha384)</t>
+          </li>
+          <li>
+            <t>Diffie-Hellman Group: 20 (384-bit random ECP, P-384)</t>
+          </li>
+          <li>
+            <t>Authentication: ECDSA with SHA-384 using P-384 certificates</t>
+          </li>
+        </ul>
+        <t>
+          ESP (Child SA) Parameters:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Encryption: AES-256-GCM with 16-octet ICV</t>
+          </li>
+          <li>
+            <t>Extended Sequence Numbers: Enabled</t>
+          </li>
+          <li>
+            <t>Traffic Selectors: As required for overlay traffic</t>
+          </li>
+        </ul>
+        <t>
+          Lifetime Parameters:</t>
+        <ul spacing="normal">
+          <li>
+            <t>IKE SA Lifetime: 86400 seconds (24 hours) maximum</t>
+          </li>
+          <li>
+            <t>Child SA Lifetime: 28800 seconds (8 hours) maximum</t>
+          </li>
+          <li>
+            <t>Child SA Volume Limit: 1 TiB maximum</t>
+          </li>
+        </ul>
+      </section>
+      <section anchor="sect-4.5" numbered="true" toc="default">
+        <name>Certificate Requirements</name>
+        <t>
+          Node certificates MUST meet the following requirements:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Format: X.509 version 3</t>
+          </li>
+          <li>
+            <t>Key Algorithm: ECDSA with P-384 curve</t>
+          </li>
+          <li>
+            <t>Signature Algorithm: ecdsa-with-SHA384</t>
+          </li>
+          <li>
+            <t>Key Usage: digitalSignature, keyAgreement</t>
+          </li>
+          <li>
+            <t>Extended Key Usage: serverAuth, clientAuth, IPsecIKE</t>
+          </li>
+        </ul>
+        <t>
+          Certificate Authority certificates MUST use ECDSA with P-384 and
+          SHA-384 signatures.</t>
+        <t>
+          Certificate validation MUST include revocation checking via CRL or
+          OCSP when network connectivity permits.</t>
+      </section>
+      <section anchor="sect-4.6" numbered="true" toc="default">
+        <name>TLS Requirements</name>
+        <t>
+          The gRPC API MUST be protected using TLS with the following
+          configuration:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Minimum Version: TLS 1.3 (TLS 1.2 and earlier MUST NOT be used)</t>
+          </li>
+          <li>
+            <t>Cipher Suite: TLS_AES_256_GCM_SHA384 only</t>
+          </li>
+          <li>
+            <t>Certificate Type: ECDSA with P-384 curve</t>
+          </li>
+          <li>
+            <t>Client Authentication: Required (mutual TLS)</t>
+          </li>
+        </ul>
+        <t>
+          Implementations MUST reject TLS connections that do not meet these
+          requirements.</t>
+      </section>
+    </section>
+    <section anchor="sect-5" numbered="true" toc="default">
+      <name>Tunnel Fabric Management</name>
+      <section anchor="sect-5.1" numbered="true" toc="default">
+        <name>Tunnel Lifecycle States</name>
+        <t>
+          Each tunnel exists in one of the following states:</t>
+        <dl newline="false" spacing="normal" indent="3">
+          <dt>DISCOVERED:</dt>
+          <dd>
+            <t>
+              A peer has been discovered but tunnel establishment has
+            </t>
+            <t>
+              not begun. Entry: peer discovery. Exit: initiate IKEv2.
+            </t>
+          </dd>
+          <dt>INITIATING:</dt>
+          <dd>
+            <t>
+              IKEv2 negotiation is in progress. Entry: IKEv2
+            </t>
+            <t>
+              initiation. Exit: IKE_SA and CHILD_SA established, or timeout/
+              failure.
+            </t>
+          </dd>
+          <dt>ESTABLISHED:</dt>
+          <dd>
+            <t>
+              The tunnel is operational and probes are succeeding
+            </t>
+            <t>
+              within acceptable thresholds. Entry: successful IKEv2 completion
+              or recovery from DEGRADED. Exit: metrics degrade, probe failures
+              accumulate, or rekey initiated.
+            </t>
+          </dd>
+          <dt>DEGRADED:</dt>
+          <dd>
+            <t>
+              The tunnel is operational but metrics exceed preferred
+            </t>
+            <t>
+              thresholds. Entry: metrics exceed degradation thresholds. Exit:
+              metrics recover or probe failures accumulate.
+            </t>
+          </dd>
+          <dt>REKEYING:</dt>
+          <dd>
+            <t>
+              Security association rekeying is in progress. Entry:
+            </t>
+            <t>
+              rekey initiated (time or volume based). Exit: rekey success or
+              failure.
+            </t>
+          </dd>
+          <dt>DOWN:</dt>
+          <dd>
+            <t>
+              The tunnel has failed and is not currently usable. Entry:
+            </t>
+            <t>
+              consecutive probe failures exceed threshold or IKE failure. Exit:
+              probes succeed or WAN becomes unavailable.
+            </t>
+          </dd>
+          <dt>DELETED:</dt>
+          <dd>
+            <t>
+              The tunnel is marked for removal. Entry: WAN unavailable
+            </t>
+            <t>
+              or administrative deletion. Exit: cleanup complete.
+            </t>
+          </dd>
+        </dl>
+        <t>
+          State transitions MUST be reported via the gRPC API event stream and
+          SHOULD be logged for operational visibility.</t>
+      </section>
+      <section anchor="sect-5.2" numbered="true" toc="default">
+        <name>Tunnel Establishment Policy</name>
+        <t>
+          CONDUIT supports three fabric modes:</t>
+        <dl newline="false" spacing="normal" indent="3">
+          <dt>Full Mesh:</dt>
+          <dd>
+            <t>
+              Create tunnels for all combinations of local and remote
+            </t>
+            <t>
+              WAN interfaces. This mode maximizes path diversity but increases
+              resource consumption.
+            </t>
+          </dd>
+          <dt>Primary Only:</dt>
+          <dd>
+            <t>
+              Create tunnels only between designated primary WAN
+            </t>
+            <t>
+              interfaces on each node. This mode minimizes resource consumption
+              but limits path diversity.
+            </t>
+          </dd>
+          <dt>Custom:</dt>
+          <dd>
+            <t>
+              Apply a rule-based policy to determine which tunnel
+            </t>
+            <t>
+              combinations to establish. Rules may specify:
+            </t>
+            <ul spacing="normal">
+              <li>
+                <t>Local WAN type (e.g., SATCOM, LOS, cellular)</t>
+              </li>
+              <li>
+                <t>Remote WAN type</t>
+              </li>
+              <li>
+                <t>Action (create or skip)</t>
+              </li>
+              <li>
+                <t>Priority (affects establishment order)</t>
+              </li>
+            </ul>
+          </dd>
+        </dl>
+        <t>
+          The tunnel policy SHOULD be configurable via the gRPC API and SHOULD
+          support runtime modification without service interruption.</t>
+      </section>
+      <section anchor="sect-5.3" numbered="true" toc="default">
+        <name>Tunnel Naming Convention</name>
+        <t>
+          Tunnel interfaces SHOULD be named according to the following
+          convention to facilitate operational identification:</t>
+        <dl newline="false" spacing="normal" indent="3">
+          <dt />
+          <dd>
+            tun-&lt;peer&gt;-&lt;local_wan&gt;-&lt;remote_wan&gt;</dd>
+        </dl>
+        <t>
+          Where:</t>
+        <ul spacing="normal">
+          <li>
+            <t>&lt;peer&gt; is a short identifier for the remote node</t>
+          </li>
+          <li>
+            <t>&lt;local_wan&gt; is a short identifier for the local WAN interface</t>
+          </li>
+          <li>
+            <t>&lt;remote_wan&gt; is a short identifier for the remote WAN interface</t>
+          </li>
+        </ul>
+        <t>
+          Example names:</t>
+        <ul spacing="normal">
+          <li>
+            <t>tun-hq-sat-sat (to headquarters, SATCOM to SATCOM)</t>
+          </li>
+          <li>
+            <t>tun-hq-los-lte (to headquarters, LOS radio to LTE)</t>
+          </li>
+          <li>
+            <t>tun-fwd1-hf-hf (to forward unit 1, HF to HF)</t>
+          </li>
+        </ul>
+      </section>
+      <section anchor="sect-5.4" numbered="true" toc="default">
+        <name>Full Mesh Fabric</name>
+        <t>
+          When operating in full mesh mode, the number of tunnels T to a single
+          peer is:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+   T = L x R
+]]></artwork>
+        <t>
+          Where L is the number of local WAN interfaces and R is the number of
+          remote WAN interfaces on the peer.</t>
+        <dl newline="true" spacing="normal" indent="1">
+          <dt>The total tunnels across all peers is:</dt>
+          <dd />
+        </dl>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+   Total = sum(L x R_i) for each peer i
+
+Implementations MUST support configurable limits on:
+]]></artwork>
+        <ul spacing="normal">
+          <li>
+            <t>Maximum tunnels per peer</t>
+          </li>
+          <li>
+            <t>Maximum total tunnels</t>
+          </li>
+        </ul>
+        <t>
+          When limits would be exceeded, implementations SHOULD prioritize
+          tunnel creation based on configured policy and WAN type preferences.</t>
+      </section>
+    </section>
+    <section anchor="sect-6" numbered="true" toc="default">
+      <name>Health Monitoring</name>
+      <section anchor="sect-6.1" numbered="true" toc="default">
+        <name>Probe Mechanism</name>
+        <t>
+          CONDUIT monitors tunnel health through active probing. Each tunnel
+          is independently probed to measure:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Metric</th>
+              <th align="left"> Unit</th>
+              <th align="left"> Collection Method</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Round-Trip Time</td>
+              <td align="left">Microseconds</td>
+              <td align="left">Timestamp echo</td>
+            </tr>
+            <tr>
+              <td align="left">Jitter</td>
+              <td align="left">Microseconds</td>
+              <td align="left"><xref target="RFC3550" /> algorithm</td>
+            </tr>
+            <tr>
+              <td align="left">Packet Loss</td>
+              <td align="left">Percentage</td>
+              <td align="left">Sequence tracking</td>
+            </tr>
+            <tr>
+              <td align="left">Availability</td>
+              <td align="left">Percentage</td>
+              <td align="left">Probe success rate</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section anchor="sect-6.2" numbered="true" toc="default">
+        <name>Probe Packet Format</name>
+        <t>
+          CONDUIT probe packets use the following format:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+0                   1                   2                   3
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                     Magic (0x434E4454)                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    Version    |     Type      |            Flags              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      Sequence Number                          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                    TX Timestamp (64-bit)                      +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                    RX Timestamp (64-bit)                      +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                                                               +
+|                                                               |
++                      HMAC-SHA-384                             +
+|                        (384 bits)                             |
++                                                               +
+|                                                               |
++                                                               +
+|                                                               |
++                                                               +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                     Padding (variable)                        +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Field descriptions:
+]]></artwork>
+        <dl newline="false" spacing="normal" indent="3">
+          <dt>Magic (32 bits):</dt>
+          <dd>
+            <t>
+              Fixed value 0x434E4454 ("CNDT" in ASCII). Used to
+            </t>
+            <t>
+              identify CONDUIT probe packets.
+            </t>
+          </dd>
+          <dt>Version (8 bits):</dt>
+          <dd>
+            <t>
+              Protocol version. This specification defines
+            </t>
+            <t>
+              version 1.
+            </t>
+          </dd>
+          <dt>Type (8 bits):</dt>
+          <dd>
+            <t>
+              Probe type:
+            </t>
+            <ul spacing="normal">
+              <li>
+                <t>0x01: Echo Request</t>
+              </li>
+              <li>
+                <t>0x02: Echo Reply</t>
+              </li>
+              <li>
+                <t>0x03: Timestamp Request</t>
+              </li>
+              <li>
+                <t>0x04: Timestamp Reply</t>
+              </li>
+            </ul>
+          </dd>
+          <dt>Flags (16 bits):</dt>
+          <dd>
+            <t>
+              Reserved for future use. MUST be set to zero on
+            </t>
+            <t>
+              transmission and ignored on receipt.
+            </t>
+          </dd>
+          <dt>Sequence Number (32 bits):</dt>
+          <dd>
+            <t>
+              Monotonically increasing sequence number
+            </t>
+            <t>
+              used for loss detection and RTT matching.
+            </t>
+          </dd>
+          <dt>TX Timestamp (64 bits):</dt>
+          <dd>
+            <t>
+              Transmission timestamp in microseconds since
+            </t>
+            <t>
+              the Unix epoch. Set by the sender.
+            </t>
+          </dd>
+          <dt>RX Timestamp (64 bits):</dt>
+          <dd>
+            <t>
+              Reception timestamp in microseconds since
+            </t>
+            <t>
+              the Unix epoch. Set by the responder in reply packets; zero in
+              request packets.
+            </t>
+          </dd>
+          <dt>HMAC-SHA-384 (384 bits):</dt>
+          <dd>
+            <t>
+              Message authentication code computed over
+            </t>
+            <t>
+              all preceding fields. Provides probe authenticity and integrity.
+            </t>
+          </dd>
+          <dt>Padding (variable):</dt>
+          <dd>
+            <t>
+              Optional padding to achieve desired probe size
+            </t>
+            <t>
+              for bandwidth estimation or MTU testing.
+            </t>
+          </dd>
+        </dl>
+      </section>
+      <section anchor="sect-6.3" numbered="true" toc="default">
+        <name>Metrics Calculation</name>
+        <section anchor="sect-6.3.1" numbered="true" toc="default">
+          <name>Round-Trip Time</name>
+          <dl newline="true" spacing="normal" indent="1">
+            <dt>RTT is calculated as:</dt>
+            <dd />
+          </dl>
+          <artwork name="" type="" align="left" alt=""><![CDATA[
+   RTT = T_local_rx - T_local_tx
+]]></artwork>
+          <t>
+            Where T_local_rx is the local time when the reply was received and
+            T_local_tx is the local time when the request was sent.</t>
+          <t>
+            For more accurate one-way delay measurement when nodes have
+            synchronized clocks:</t>
+          <artwork name="" type="" align="left" alt=""><![CDATA[
+   OWD_forward = T_remote_rx - T_local_tx
+   OWD_reverse = T_local_rx - T_remote_tx
+]]></artwork>
+        </section>
+        <section anchor="sect-6.3.2" numbered="true" toc="default">
+          <name>Jitter</name>
+          <dl newline="true" spacing="normal" indent="1">
+            <dt>Jitter is calculated using the algorithm specified in [RFC3550]:</dt>
+            <dd />
+          </dl>
+          <artwork name="" type="" align="left" alt=""><![CDATA[
+   D(i) = (R(i) - R(i-1)) - (S(i) - S(i-1))
+   J(i) = J(i-1) + (|D(i)| - J(i-1)) / 16
+
+Where:
+]]></artwork>
+          <ul spacing="normal">
+            <li>
+              <t>R(i) is the receive timestamp of probe i</t>
+            </li>
+            <li>
+              <t>S(i) is the send timestamp of probe i</t>
+            </li>
+            <li>
+              <t>J(i) is the jitter estimate after probe i</t>
+            </li>
+          </ul>
+        </section>
+        <section anchor="sect-6.3.3" numbered="true" toc="default">
+          <name>Packet Loss</name>
+          <dl newline="true" spacing="normal" indent="3">
+            <dt>Packet loss is calculated over a sliding window:</dt>
+            <dd>
+              Loss% = ((Probes_sent - Probes_received) / Probes_sent) x 100
+            </dd>
+          </dl>
+          <t>
+            The default window size is 100 probes. Implementations SHOULD make
+            this configurable.</t>
+        </section>
+      </section>
+      <section anchor="sect-6.4" numbered="true" toc="default">
+        <name>Probe Scheduling</name>
+        <t>
+          The base probe interval is configurable, with a default of 100ms.</t>
+        <t>
+          The effective probe interval SHOULD be adjusted based on tunnel
+          state:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> State</th>
+              <th align="left"> Multiplier</th>
+              <th align="left"> Rationale</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Established</td>
+              <td align="left">1.0</td>
+              <td align="left">Normal monitoring</td>
+            </tr>
+            <tr>
+              <td align="left">Degraded</td>
+              <td align="left">0.5</td>
+              <td align="left">Increased monitoring of troubled tunnel</td>
+            </tr>
+            <tr>
+              <td align="left">Recovering</td>
+              <td align="left">0.25</td>
+              <td align="left">Rapid assessment during recovery</td>
+            </tr>
+            <tr>
+              <td align="left">Down</td>
+              <td align="left">2.0</td>
+              <td align="left">Reduced load on failed path</td>
+            </tr>
+          </tbody>
+        </table>
+        <t>
+          To prevent probe synchronization across tunnels, implementations
+          SHOULD add random jitter of +/- 10% to each probe interval.</t>
+      </section>
+      <section anchor="sect-6.5" numbered="true" toc="default">
+        <name>Tunnel State Determination</name>
+        <t>
+          Tunnel state transitions are triggered by threshold crossings:</t>
+        <t>
+          Degraded Thresholds:</t>
+        <ul spacing="normal">
+          <li>
+            <t>RTT increases by more than 50% above baseline</t>
+          </li>
+          <li>
+            <t>Packet loss exceeds 1%</t>
+          </li>
+          <li>
+            <t>Jitter increases by more than 100% above baseline</t>
+          </li>
+        </ul>
+        <t>
+          Down Thresholds:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Five or more consecutive probe failures</t>
+          </li>
+          <li>
+            <t>Packet loss exceeds 25%</t>
+          </li>
+        </ul>
+        <t>
+          Thresholds SHOULD be configurable via the gRPC API.</t>
+      </section>
+    </section>
+    <section anchor="sect-7" numbered="true" toc="default">
+      <name>Metric Publishing</name>
+      <section anchor="sect-7.1" numbered="true" toc="default">
+        <name>Publishing Methods</name>
+        <t>
+          CONDUIT publishes tunnel metrics through multiple mechanisms to
+          enable SRv6-based traffic engineering:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Method</th>
+              <th align="left"> Target</th>
+              <th align="left"> Use Case</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Interface Metrics</td>
+              <td align="left">Operating system</td>
+              <td align="left">Simple deployments</td>
+            </tr>
+            <tr>
+              <td align="left">IGP TE Extensions</td>
+              <td align="left">IS-IS / OSPF</td>
+              <td align="left">Distributed TE</td>
+            </tr>
+            <tr>
+              <td align="left">gRPC Streaming</td>
+              <td align="left">SDN Controller</td>
+              <td align="left">Centralized TE</td>
+            </tr>
+            <tr>
+              <td align="left">Flex-Algo Affinity</td>
+              <td align="left">IGP Flex-Algo</td>
+              <td align="left">Constraint-based TE</td>
+            </tr>
+          </tbody>
+        </table>
+        <t>
+          Implementations MUST support interface metric publishing.
+          Implementations SHOULD support IGP TE extensions and gRPC streaming.</t>
+      </section>
+      <section anchor="sect-7.2" numbered="true" toc="default">
+        <name>Interface Metric Calculation</name>
+        <t>
+          CONDUIT calculates an interface metric from tunnel quality
+          measurements using the following formula:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+   Metric = Latency_component + Loss_component + Jitter_component
+
+Where:
+]]></artwork>
+        <ul spacing="normal">
+          <li>
+            <t>Latency_component = RTT_ms (1 ms = 1 metric unit)</t>
+          </li>
+          <li>
+            <t>Loss_component = Loss% x 100 (1% loss = 100 metric units)</t>
+          </li>
+          <li>
+            <t>Jitter_component = Jitter_ms x 10 (1 ms jitter = 10 metric units)</t>
+          </li>
+        </ul>
+        <t>
+          The resulting metric MUST be clamped to the range 1-65535.</t>
+        <t>
+          Example calculations:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Tunnel Type</th>
+              <th align="left"> RTT</th>
+              <th align="left"> Loss</th>
+              <th align="left"> Jitter</th>
+              <th align="left"> Metric</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">GEO SATCOM</td>
+              <td align="left">600 ms</td>
+              <td align="left">0.1%</td>
+              <td align="left">10 ms</td>
+              <td align="left">710</td>
+            </tr>
+            <tr>
+              <td align="left">LOS Radio</td>
+              <td align="left">5 ms</td>
+              <td align="left">0%</td>
+              <td align="left">0.5 ms</td>
+              <td align="left">10</td>
+            </tr>
+            <tr>
+              <td align="left">LTE Cellular</td>
+              <td align="left">50 ms</td>
+              <td align="left">0.5%</td>
+              <td align="left">5 ms</td>
+              <td align="left">150</td>
+            </tr>
+          </tbody>
+        </table>
+        <t>
+          The SRv6 data plane, seeing these metrics, will naturally prefer the
+          LOS tunnel (metric 10) over LTE (metric 150) over SATCOM (metric
+          710) when computing shortest paths.</t>
+      </section>
+      <section anchor="sect-7.3" numbered="true" toc="default">
+        <name>IGP TE Extensions</name>
+        <t>
+          When IGP TE metric publishing is enabled, CONDUIT advertises the
+          following per-tunnel attributes:</t>
+        <ul spacing="normal">
+          <li>
+            <t>TE Metric: Calculated as described in <xref target="sect-7.2" />
+            </t>
+          </li>
+          <li>
+            <t>Maximum Link Bandwidth: Configured WAN bandwidth</t>
+          </li>
+          <li>
+            <t>Available Bandwidth: Estimated available capacity</t>
+          </li>
+          <li>
+            <t>Unidirectional Link Delay: Measured one-way delay per <xref target="RFC8570"
+              /></t>
+          </li>
+          <li>
+            <t>Unidirectional Delay Variation: Measured jitter per <xref target="RFC8570"
+              /></t>
+          </li>
+          <li>
+            <t>Unidirectional Packet Loss: Measured loss per <xref target="RFC8570" /></t>
+          </li>
+          <li>
+            <t>Shared Risk Link Groups: Assigned SRLG values</t>
+          </li>
+          <li>
+            <t>Administrative Group: For Flex-Algo affinity matching</t>
+          </li>
+        </ul>
+        <t> For IS-IS, these attributes are advertised using the extensions defined in <xref
+            target="RFC8570" />. For OSPF, the equivalent extensions from <xref
+            target="RFC7471" /> apply.</t>
+      </section>
+      <section anchor="sect-7.4" numbered="true" toc="default">
+        <name>Flex-Algo Integration</name>
+        <t>
+          CONDUIT assigns tunnels to Flexible Algorithm groups based on
+          measured characteristics and configured constraints.</t>
+        <t>
+          A Flex-Algo definition specifies:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Algorithm ID: An integer in the range 128-255</t>
+          </li>
+          <li>
+            <t>Metric Type: IGP metric, minimum delay, or TE metric</t>
+          </li>
+          <li>
+            <t>Constraints: Maximum delay, minimum bandwidth, SRLG exclusions</t>
+          </li>
+        </ul>
+        <t>
+          CONDUIT evaluates each tunnel against each Flex-Algo definition and
+          sets the appropriate affinity bits in IGP advertisements.</t>
+        <t>
+          Example Flex-Algo definitions for tactical networks:</t>
+        <t>
+          Flex-Algo 128 (Low Latency):</t>
+        <ul spacing="normal">
+          <li>
+            <t>Metric Type: Minimum Delay</t>
+          </li>
+          <li>
+            <t>Constraint: Maximum delay 100 ms</t>
+          </li>
+          <li>
+            <t>Use: Voice, real-time C2</t>
+          </li>
+        </ul>
+        <t>
+          Flex-Algo 129 (High Bandwidth):</t>
+        <ul spacing="normal">
+          <li>
+            <t>Metric Type: IGP</t>
+          </li>
+          <li>
+            <t>Constraint: Minimum bandwidth 1 Mbps</t>
+          </li>
+          <li>
+            <t>Use: Video, bulk transfer</t>
+          </li>
+        </ul>
+        <t>
+          Flex-Algo 130 (Resilient):</t>
+        <ul spacing="normal">
+          <li>
+            <t>Metric Type: IGP</t>
+          </li>
+          <li>
+            <t>Constraint: Exclude SRLG "satcom"</t>
+          </li>
+          <li>
+            <t>Use: Critical C2 requiring terrestrial diversity</t>
+          </li>
+        </ul>
+        <t>
+          With these definitions, the SRv6 data plane automatically steers
+          voice traffic over low-latency tunnels (LOS radio), video over high-
+          bandwidth tunnels (possibly ECMP across multiple), and critical C2
+          over tunnels not sharing SATCOM failure modes.</t>
+      </section>
+      <section anchor="sect-7.5" numbered="true" toc="default">
+        <name>SRLG Assignment</name>
+        <t>
+          Shared Risk Link Groups identify tunnels that share common failure
+          modes. CONDUIT assigns SRLG values based on:</t>
+        <ul spacing="normal">
+          <li>
+            <t>WAN Type: All tunnels using SATCOM share a "satcom" SRLG</t>
+          </li>
+          <li>
+            <t>Physical Path: Tunnels using the same physical link share an SRLG</t>
+          </li>
+          <li>
+            <t>Provider: Tunnels using the same carrier share an SRLG</t>
+          </li>
+          <li>
+            <t>Geographic: Tunnels transiting the same geographic area may share
+              an SRLG</t>
+          </li>
+        </ul>
+        <t>
+          SRLG assignment enables SRv6 TI-LFA to compute backup paths that
+          avoid shared failure modes and Flex-Algo to exclude entire failure
+          domains.</t>
+      </section>
+    </section>
+    <section anchor="sect-8" numbered="true" toc="default">
+      <name>Control Protocol</name>
+      <section anchor="sect-8.1" numbered="true" toc="default">
+        <name>Transport</name>
+        <t>
+          CONDUIT control messages are transported via UDP. Two ports are
+          used:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Port 4794: Control messages (HELLO, WAN_UPDATE, etc.)</t>
+          </li>
+          <li>
+            <t>Port 4795: Probe packets</t>
+          </li>
+        </ul>
+        <t>
+          Control messages are transmitted through established IPsec tunnels
+          when available. For initial peer discovery before tunnel
+          establishment, messages may be sent via the underlying WAN with
+          HMAC authentication.</t>
+      </section>
+      <section anchor="sect-8.2" numbered="true" toc="default">
+        <name>Message Header</name>
+        <t>
+          All CONDUIT control messages share a common header:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+0                   1                   2                   3
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    Version    |     Type      |            Flags              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            Length             |           Reserved            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                         Node ID                               +
+|                         (64 bits)                             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      Sequence Number                          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                      Timestamp (64 bits)                      +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                                                               +
+|                                                               |
++                      HMAC-SHA-384                             +
+|                        (384 bits)                             |
++                                                               +
+|                                                               |
++                                                               +
+|                                                               |
++                                                               +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Field descriptions:
+]]></artwork>
+        <dl newline="false" spacing="normal" indent="3">
+          <dt>Version (8 bits):</dt>
+          <dd>
+            <t>
+              Protocol version. This specification defines
+            </t>
+            <t>
+              version 1.
+            </t>
+          </dd>
+          <dt>Type (8 bits):</dt>
+          <dd>
+            <t> Message type as defined in <xref target="sect-8.3" />. </t>
+            <t />
+          </dd>
+          <dt>Flags (16 bits):</dt>
+          <dd>
+            <t>
+              Message-specific flags.
+            </t>
+            <t />
+          </dd>
+          <dt>Length (16 bits):</dt>
+          <dd>
+            <t>
+              Total message length in octets, including header.
+            </t>
+            <t />
+          </dd>
+        </dl>
+        <t>
+          Reserved (16 bits): Reserved for future use. MUST be zero.</t>
+        <dl newline="false" spacing="normal" indent="1">
+          <dt>Node ID (64 bits):</dt>
+          <dd>
+            <t>
+              Unique identifier of the sending node.
+            </t>
+            <t />
+          </dd>
+          <dt>Sequence Number (32 bits):</dt>
+          <dd>
+            <t>
+              Per-peer monotonically increasing
+            </t>
+            <t>
+              counter for anti-replay protection.
+            </t>
+          </dd>
+          <dt>Timestamp (64 bits):</dt>
+          <dd>
+            <t>
+              Message creation time in microseconds since
+            </t>
+            <t>
+              Unix epoch.
+            </t>
+          </dd>
+          <dt>HMAC-SHA-384 (384 bits):</dt>
+          <dd>
+            <t>
+              Message authentication code computed over
+            </t>
+            <t>
+              the entire message with the HMAC field set to zero.
+            </t>
+          </dd>
+        </dl>
+        <t>
+          Total header size: 72 octets.</t>
+      </section>
+      <section anchor="sect-8.3" numbered="true" toc="default">
+        <name>Message Types</name>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Value</th>
+              <th align="left"> Name</th>
+              <th align="left"> Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">0x01</td>
+              <td align="left">HELLO</td>
+              <td align="left">Peer discovery and WAN advertisement</td>
+            </tr>
+            <tr>
+              <td align="left">0x02</td>
+              <td align="left">HELLO_ACK</td>
+              <td align="left">Response to HELLO</td>
+            </tr>
+            <tr>
+              <td align="left">0x03</td>
+              <td align="left">WAN_UPDATE</td>
+              <td align="left">WAN availability change notification</td>
+            </tr>
+            <tr>
+              <td align="left">0x04</td>
+              <td align="left">TUNNEL_STATE</td>
+              <td align="left">Tunnel state change notification</td>
+            </tr>
+            <tr>
+              <td align="left">0x05</td>
+              <td align="left">KEEPALIVE</td>
+              <td align="left">Peer liveness check</td>
+            </tr>
+            <tr>
+              <td align="left">0x06</td>
+              <td align="left">KEEPALIVE_ACK</td>
+              <td align="left">Response to KEEPALIVE</td>
+            </tr>
+            <tr>
+              <td align="left">0x0F</td>
+              <td align="left">ERROR</td>
+              <td align="left">Error notification</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section anchor="sect-8.4" numbered="true" toc="default">
+        <name>HELLO Message</name>
+        <t>
+          The HELLO message is used for peer discovery and WAN capability
+          advertisement:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+0                   1                   2                   3
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|   Num WANs    |   Reserved    |         Capabilities          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Hold Time (sec)        |        Max Tunnels            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                    SRv6 Locator (48 bits)                     +
+|                               +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                               |           Reserved            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
+~                      WAN Descriptors                          ~
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+Field descriptions:
+]]></artwork>
+        <dl newline="false" spacing="normal" indent="1">
+          <dt>Num WANs (8 bits):</dt>
+          <dd>
+            <t>
+              Number of WAN Descriptors following.
+            </t>
+            <t />
+          </dd>
+          <dt>Capabilities (16 bits):</dt>
+          <dd>
+            <t>
+              Bitmask of supported capabilities.
+            </t>
+            <t />
+          </dd>
+          <dt>Hold Time (16 bits):</dt>
+          <dd>
+            <t>
+              Time in seconds the receiver should consider
+            </t>
+            <t>
+              the sender reachable without further messages.
+            </t>
+          </dd>
+          <dt>Max Tunnels (16 bits):</dt>
+          <dd>
+            <t>
+              Maximum tunnels this node can establish to
+            </t>
+            <t>
+              a single peer.
+            </t>
+          </dd>
+          <dt>SRv6 Locator (48 bits):</dt>
+          <dd>
+            <t>
+              The node's SRv6 locator prefix.
+            </t>
+            <t />
+          </dd>
+        </dl>
+      </section>
+      <section anchor="sect-8.5" numbered="true" toc="default">
+        <name>WAN Descriptor</name>
+        <t>
+          Each WAN interface is described by a WAN Descriptor:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+0                   1                   2                   3
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    WAN ID     |   WAN Type    |     State     | Addr Flags    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      Bandwidth (Kbps)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              MTU              |     Typical Latency (ms)      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                  IPv6 Address (if flag set)                   +
+|                        (128 bits)                             |
++                                                               +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                  IPv4 Address (if flag set)                   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|            SRLG ID            |           Reserved            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+WAN Type values:
+]]></artwork>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Value</th>
+              <th align="left"> Name</th>
+              <th align="left"> Typical Characteristics</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">0x01</td>
+              <td align="left">SATCOM_GEO</td>
+              <td align="left">600ms RTT, 2-10 Mbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x02</td>
+              <td align="left">SATCOM_LEO</td>
+              <td align="left">30ms RTT, 50-200 Mbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x03</td>
+              <td align="left">LOS_RADIO</td>
+              <td align="left">5ms RTT, 10-100 Mbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x04</td>
+              <td align="left">TROPOSCATTER</td>
+              <td align="left">10ms RTT, 5-20 Mbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x05</td>
+              <td align="left">HF_RADIO</td>
+              <td align="left">50ms RTT, 9.6-64 Kbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x06</td>
+              <td align="left">CELLULAR_LTE</td>
+              <td align="left">30ms RTT, 10-100 Mbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x07</td>
+              <td align="left">CELLULAR_5G</td>
+              <td align="left">10ms RTT, 100-1000 Mbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x08</td>
+              <td align="left">WIRE_ETHERNET</td>
+              <td align="left">1ms RTT, 1-100 Gbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x09</td>
+              <td align="left">WIRE_FIBER</td>
+              <td align="left">1ms RTT, 1-100 Gbps</td>
+            </tr>
+            <tr>
+              <td align="left">0x0A</td>
+              <td align="left">WIFI</td>
+              <td align="left">5ms RTT, 50-500 Mbps</td>
+            </tr>
+          </tbody>
+        </table>
+        <t keepWithPrevious="true"> Address Flags:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Bit 0: IPv4 address present</t>
+          </li>
+          <li>
+            <t>Bit 1: IPv6 address present</t>
+          </li>
+          <li>
+            <t>Bit 2: Behind NAT (IPv4)</t>
+          </li>
+          <li>
+            <t>Bit 3: Behind NAT (IPv6)</t>
+          </li>
+        </ul>
+      </section>
+      <section anchor="sect-8.6" numbered="true" toc="default">
+        <name>Message Authentication</name>
+        <t>
+          All CONDUIT control messages MUST be authenticated using HMAC-
+          SHA-384.</t>
+        <dl newline="true" spacing="normal" indent="1">
+          <dt>The authentication key is derived from the IKEv2 SA when available:</dt>
+          <dd />
+        </dl>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
+   AUTH_KEY = HKDF-SHA-384(
+      IKM = SK_d,
+      salt = "CONDUIT-v1-auth",
+      info = Node_ID_local || Node_ID_remote,
+      length = 48
+   )
+]]></artwork>
+        <t>
+          For initial HELLO messages before IKEv2 SA establishment, a pre-
+          shared key MAY be used. Unauthenticated HELLO messages MUST NOT be
+          accepted in production deployments.</t>
+      </section>
+      <section anchor="sect-8.7" numbered="true" toc="default">
+        <name>Anti-Replay Protection</name>
+        <t>
+          Each peer maintains anti-replay state consisting of:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Expected sequence number (next expected value)</t>
+          </li>
+          <li>
+            <t>Window bitmap (received sequences within window)</t>
+          </li>
+          <li>
+            <t>Window size (default 64)</t>
+          </li>
+          <li>
+            <t>Maximum timestamp skew (default 60 seconds)</t>
+          </li>
+        </ul>
+        <t>
+          Message acceptance rules:</t>
+        <ol spacing="normal" type="1">
+          <li>
+            <t>If sequence &gt;= expected: Accept and update expected</t>
+          </li>
+          <li>
+            <t>If sequence &lt; expected - window_size: Reject (too old)</t>
+          </li>
+          <li>
+            <t>If sequence in window and bit set: Reject (replay)</t>
+          </li>
+          <li>
+            <t>If sequence in window and bit clear: Accept and set bit</t>
+          </li>
+          <li>
+            <t>If timestamp differs from local time by more than maximum skew:
+              Reject</t>
+          </li>
+        </ol>
+      </section>
+    </section>
+    <section anchor="sect-9" numbered="true" toc="default">
+      <name>SRv6 Integration</name>
+      <section anchor="sect-9.1" numbered="true" toc="default">
+        <name>Tunnel Interfaces as SRv6 Adjacencies</name>
+        <t>
+          Each CONDUIT tunnel is presented to the SRv6 data plane as a
+          distinct interface. From the perspective of IS-IS or OSPFv3, each
+          tunnel represents a separate adjacency to the peer node.</t>
+        <t>
+          This design enables:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Independent metrics per tunnel based on measured quality</t>
+          </li>
+          <li>
+            <t>ECMP load balancing across multiple tunnels to the same peer</t>
+          </li>
+          <li>
+            <t>Flex-Algo differentiation based on tunnel characteristics</t>
+          </li>
+          <li>
+            <t>TI-LFA backup path computation considering tunnel diversity</t>
+          </li>
+        </ul>
+        <t>
+          For example, a node with three tunnels to a peer (via SATCOM, LOS,
+          and LTE) would advertise three adjacencies in IS-IS, each with its
+          own metric. The IGP SPF computation naturally prefers lower-metric
+          paths.</t>
+      </section>
+      <section anchor="sect-9.2" numbered="true" toc="default">
+        <name>Flex-Algo Tunnel Assignment</name>
+        <t>
+          CONDUIT evaluates each tunnel against configured Flex-Algo
+          definitions and assigns appropriate affinities.</t>
+        <t>
+          A tunnel qualifies for a Flex-Algo if:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Measured delay is less than the maximum delay constraint (if
+              specified)</t>
+          </li>
+          <li>
+            <t>Configured bandwidth meets the minimum bandwidth constraint (if
+              specified)</t>
+          </li>
+          <li>
+            <t>Tunnel SRLG membership does not intersect with excluded SRLGs (if
+              specified)</t>
+          </li>
+        </ul>
+        <t>
+          Assignment is dynamic: as tunnel metrics change, Flex-Algo membership
+          is re-evaluated and IGP advertisements are updated accordingly.</t>
+        <t>
+          Example assignment for a deployment with three Flex-Algos:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Tunnel </th>
+              <th align="left"> Algo 128 (Low Lat)</th>
+              <th align="left"> Algo 129 (High BW)</th>
+              <th align="left"> Algo 130 (Resilient)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">SATCOM (600ms)</td>
+              <td align="left">Excluded</td>
+              <td align="left">Included</td>
+              <td align="left">Excluded</td>
+            </tr>
+            <tr>
+              <td align="left">LOS Radio (5ms)</td>
+              <td align="left">Included</td>
+              <td align="left">Included</td>
+              <td align="left">Included</td>
+            </tr>
+            <tr>
+              <td align="left">LTE (50ms)</td>
+              <td align="left">Included</td>
+              <td align="left">Included</td>
+              <td align="left">Included</td>
+            </tr>
+          </tbody>
+        </table>
+        <t>
+          The SATCOM tunnel is excluded from Flex-Algo 128 (delay exceeds
+          100ms threshold) and Flex-Algo 130 (SRLG "satcom" is excluded).</t>
+      </section>
+      <section anchor="sect-9.3" numbered="true" toc="default">
+        <name>Traffic Steering</name>
+        <t>
+          With CONDUIT providing tunnel metrics and Flex-Algo assignments,
+          traffic steering is accomplished through standard SRv6 mechanisms:</t>
+        <ul spacing="normal">
+          <li>
+            <t>SRv6 Policy Color: Traffic matching a policy with a specific
+              color is steered to paths computed using the associated Flex-Algo</t>
+          </li>
+          <li>
+            <t>DSCP Mapping: DSCP values can be mapped to SRv6 policy colors</t>
+          </li>
+          <li>
+            <t>BGP Communities: BGP communities can signal desired Flex-Algo</t>
+          </li>
+        </ul>
+        <t>
+          Example mapping for tactical traffic:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Traffic Type</th>
+              <th align="left"> DSCP</th>
+              <th align="left"> SR Color</th>
+              <th align="left"> Flex-Algo</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Voice</td>
+              <td align="left">EF (46)</td>
+              <td align="left">100</td>
+              <td align="left">128 (Low Latency)</td>
+            </tr>
+            <tr>
+              <td align="left">Video</td>
+              <td align="left">AF41 (34)</td>
+              <td align="left">200</td>
+              <td align="left">129 (High BW)</td>
+            </tr>
+            <tr>
+              <td align="left">Critical C2</td>
+              <td align="left">CS6 (48)</td>
+              <td align="left">300</td>
+              <td align="left">130 (Resilient)</td>
+            </tr>
+            <tr>
+              <td align="left">Best Effort</td>
+              <td align="left">BE (0)</td>
+              <td align="left">0</td>
+              <td align="left">Default (SPF)</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </section>
+    <section anchor="sect-10" numbered="true" toc="default">
+      <name>High Availability</name>
+      <section anchor="sect-10.1" numbered="true" toc="default">
+        <name>HA Architecture</name>
+        <t>
+          CONDUIT supports high availability through active-standby or active-
+          active node pairs sharing a virtual IP address.</t>
+        <t>
+          In active-standby mode:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Primary node handles all tunnel management and peer communication</t>
+          </li>
+          <li>
+            <t>Standby node maintains synchronized state and pre-established
+              tunnels</t>
+          </li>
+          <li>
+            <t>Failover occurs when primary failure is detected</t>
+          </li>
+        </ul>
+        <t>
+          In active-active mode:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Both nodes actively manage tunnels</t>
+          </li>
+          <li>
+            <t>Anycast addressing distributes peer connections</t>
+          </li>
+          <li>
+            <t>State synchronization ensures consistency</t>
+          </li>
+        </ul>
+      </section>
+      <section anchor="sect-10.2" numbered="true" toc="default">
+        <name>Synchronized State</name>
+        <t>
+          The following state is synchronized between HA peers:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Data</th>
+              <th align="left"> Sync Method</th>
+              <th align="left"> Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Peer List</td>
+              <td align="left">Periodic + Event</td>
+              <td align="left">Both nodes know all peers</td>
+            </tr>
+            <tr>
+              <td align="left">Tunnel State</td>
+              <td align="left">Event-driven</td>
+              <td align="left">Enable fast failover</td>
+            </tr>
+            <tr>
+              <td align="left">Metrics</td>
+              <td align="left">Periodic (1 Hz)</td>
+              <td align="left">Consistent path costs</td>
+            </tr>
+            <tr>
+              <td align="left">Configuration</td>
+              <td align="left">Event-driven</td>
+              <td align="left">Policy consistency</td>
+            </tr>
+          </tbody>
+        </table>
+        <t>
+          IKEv2 Security Associations are NOT synchronized. Each node
+          maintains independent SAs with peers. This simplifies
+          implementation and avoids complexities of SA state transfer.</t>
+      </section>
+      <section anchor="sect-10.3" numbered="true" toc="default">
+        <name>Failover Behavior</name>
+        <t>
+          Upon detecting primary node failure:</t>
+        <ol spacing="normal" type="1">
+          <li>
+            <t>Standby assumes the virtual IP address</t>
+          </li>
+          <li>
+            <t>Standby's pre-established tunnels become active</t>
+          </li>
+          <li>
+            <t>SRv6 reconverges via TI-LFA (sub-50ms for pre-computed backups)</t>
+          </li>
+          <li>
+            <t>Traffic flows through standby's tunnels</t>
+          </li>
+        </ol>
+        <t>
+          Target failover time is less than 3 seconds for complete recovery,
+          with TI-LFA providing sub-50ms forwarding continuity for traffic
+          with pre-computed backup paths.</t>
+      </section>
+    </section>
+    <section anchor="sect-11" numbered="true" toc="default">
+      <name>gRPC API</name>
+      <section anchor="sect-11.1" numbered="true" toc="default">
+        <name>Service Overview</name>
+        <t>
+          CONDUIT exposes all functionality through a gRPC API comprising three
+          services:</t>
+        <dl newline="false" spacing="normal" indent="3">
+          <dt>TunnelFabric Service:</dt>
+          <dd>
+            <t>
+              Primary interface for tunnel management,
+            </t>
+            <t>
+              including node configuration, WAN interface management, peer
+              discovery and management, tunnel lifecycle operations, tunnel
+              policy configuration, and metric publishing configuration.
+            </t>
+          </dd>
+          <dt>Telemetry Service:</dt>
+          <dd>
+            <t>
+              Provides access to operational metrics, including
+            </t>
+            <t>
+              current tunnel metrics, real-time metric streaming, historical
+              metric queries, and fabric statistics.
+            </t>
+          </dd>
+          <dt>HighAvailability Service:</dt>
+          <dd>
+            <t>
+              Manages HA operations, including HA status
+            </t>
+            <t>
+              and configuration, synchronization status, and manual failover
+              triggers.
+            </t>
+          </dd>
+        </dl>
+        <t>
+          The complete Protocol Buffer definitions for these services are
+          available in a companion document.</t>
+      </section>
+      <section anchor="sect-11.2" numbered="true" toc="default">
+        <name>Authentication and Authorization</name>
+        <t> All gRPC connections MUST use mutual TLS (mTLS) with certificates meeting the
+          requirements of <xref target="sect-4.5" />.</t>
+        <t>
+          Implementations SHOULD support role-based access control (RBAC) for
+          API authorization. Recommended roles include:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Administrator: Full access to all operations</t>
+          </li>
+          <li>
+            <t>Operator: Read access plus tunnel state changes</t>
+          </li>
+          <li>
+            <t>Monitor: Read-only access to status and metrics</t>
+          </li>
+        </ul>
+      </section>
+    </section>
+    <section anchor="sect-12" numbered="true" toc="default">
+      <name>Security Considerations</name>
+      <section anchor="sect-12.1" numbered="true" toc="default">
+        <name>Cryptographic Security</name>
+        <t>
+          CONDUIT's security relies on the strength of its cryptographic
+          foundations. The mandatory use of CNSA 2.0 algorithms provides
+          protection appropriate for classified information.</t>
+        <t>
+          Key security properties:</t>
+        <ul spacing="normal">
+          <li>
+            <t>All tunnel traffic is protected by AES-256-GCM, providing
+              confidentiality and integrity</t>
+          </li>
+          <li>
+            <t>All control messages are authenticated using HMAC-SHA-384</t>
+          </li>
+          <li>
+            <t>Key exchange uses ECDH with P-384, providing forward secrecy</t>
+          </li>
+          <li>
+            <t>Node authentication uses ECDSA with P-384 certificates</t>
+          </li>
+        </ul>
+      </section>
+      <section anchor="sect-12.2" numbered="true" toc="default">
+        <name>Threat Mitigations</name>
+        <t>
+          CONDUIT addresses the following threats:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Threat</th>
+              <th align="left"> Mitigation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">Probe Spoofing</td>
+              <td align="left">HMAC-SHA-384 authentication on all probes</td>
+            </tr>
+            <tr>
+              <td align="left">Replay Attacks</td>
+              <td align="left">Sequence numbers and timestamp validation</td>
+            </tr>
+            <tr>
+              <td align="left">Man-in-the-Middle</td>
+              <td align="left">IPsec with certificate-based auth</td>
+            </tr>
+            <tr>
+              <td align="left">Unauthorized API</td>
+              <td align="left">Mutual TLS with certificate validation</td>
+            </tr>
+            <tr>
+              <td align="left">Tunnel Manipulation</td>
+              <td align="left">Authenticated control protocol messages</td>
+            </tr>
+            <tr>
+              <td align="left">Denial of Service</td>
+              <td align="left">Rate limiting on control plane</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section anchor="sect-12.3" numbered="true" toc="default">
+        <name>Operational Security</name>
+        <t>
+          Deployments SHOULD implement the following operational security
+          measures:</t>
+        <ul spacing="normal">
+          <li>
+            <t>Certificates should be rotated at least annually</t>
+          </li>
+          <li>
+            <t>Private keys should be stored in hardware security modules (HSM)
+              where available</t>
+          </li>
+          <li>
+            <t>All tunnel state changes should be logged for audit purposes</t>
+          </li>
+          <li>
+            <t>Rate limiting should be applied to control plane message
+              processing</t>
+          </li>
+          <li>
+            <t>Network segmentation should isolate CONDUIT management traffic</t>
+          </li>
+        </ul>
+      </section>
+    </section>
+    <section anchor="sect-13" numbered="true" toc="default">
+      <name>IANA Considerations</name>
+      <section anchor="sect-13.1" numbered="true" toc="default">
+        <name>UDP Port Allocation</name>
+        <t>
+          This document requests allocation of two UDP ports:</t>
+        <table align="center">
+          <thead>
+            <tr>
+              <th align="left"> Port</th>
+              <th align="left"> Name</th>
+              <th align="left"> Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="left">4794</td>
+              <td align="left">conduit-control</td>
+              <td align="left">CONDUIT control messages</td>
+            </tr>
+            <tr>
+              <td align="left">4795</td>
+              <td align="left">conduit-probe</td>
+              <td align="left">CONDUIT probe packets</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section anchor="sect-13.2" numbered="true" toc="default">
+        <name>WAN Type Registry</name>
+        <t>
+          This document requests creation of a "CONDUIT WAN Types" registry
+          with the following initial values:</t>
+        <artwork name="" type="" align="left" alt=""><![CDATA[
++-------+----------------+-------------------------+
+| Value | Name           | Reference               |
++-------+----------------+-------------------------+
+|  0x00 | Reserved       | This document           |
+|  0x01 | SATCOM_GEO     | This document           |
+|  0x02 | SATCOM_LEO     | This document           |
+|  0x03 | LOS_RADIO      | This document           |
+|  0x04 | TROPOSCATTER   | This document           |
+|  0x05 | HF_RADIO       | This document           |
+|  0x06 | CELLULAR_LTE   | This document           |
+|  0x07 | CELLULAR_5G    | This document           |
+|  0x08 | WIRE_ETHERNET  | This document           |
+|  0x09 | WIRE_FIBER     | This document           |
+|  0x0A | WIFI           | This document           |
+| 0x0B-0xEF | Unassigned |                         |
+| 0xF0-0xFF | Private Use | This document          |
++-------+----------------+-------------------------+
+
+New values in the range 0x0B-0xEF require Standards Action.
+]]></artwork>
+      </section>
+    </section>
+  </middle>
+  <back>
+    <references>
+      <name>References</name>
+      <references>
+        <name>Normative References</name>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.7296.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8174.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8570.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8986.xml" />
+      </references>
+      <references>
+        <name>Informative References</name>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.3550.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.4868.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.5869.xml" />
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.7471.xml" />
+      </references>
+    </references>
+    <section anchor="sect-a" numbered="true" toc="default">
+      <name>WAN Type Characteristics</name>
+      <t>
+        The following table provides typical characteristics for each WAN
+        type. Actual values vary based on specific equipment, configuration,
+        and environmental conditions.</t>
+      <table align="center">
+        <thead>
+          <tr>
+            <th align="left"> WAN Type</th>
+            <th align="left"> Latency</th>
+            <th align="left"> Bandwidth</th>
+            <th align="left"> Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td align="left">SATCOM_GEO</td>
+            <td align="left">600ms</td>
+            <td align="left">2-10 Mbps</td>
+            <td align="left">Weather sensitive</td>
+          </tr>
+          <tr>
+            <td align="left">SATCOM_LEO</td>
+            <td align="left">20-40ms</td>
+            <td align="left">50-200 Mbps</td>
+            <td align="left">Handover during orbit</td>
+          </tr>
+          <tr>
+            <td align="left">LOS_RADIO</td>
+            <td align="left">5ms</td>
+            <td align="left">10-100 Mbps</td>
+            <td align="left">Terrain dependent</td>
+          </tr>
+          <tr>
+            <td align="left">TROPOSCATTER</td>
+            <td align="left">10ms</td>
+            <td align="left">5-20 Mbps</td>
+            <td align="left">Over-horizon capability</td>
+          </tr>
+          <tr>
+            <td align="left">HF_RADIO</td>
+            <td align="left">50ms</td>
+            <td align="left">9.6-64 Kbps</td>
+            <td align="left">Atmospheric effects</td>
+          </tr>
+          <tr>
+            <td align="left">CELLULAR_LTE</td>
+            <td align="left">30ms</td>
+            <td align="left">10-100 Mbps</td>
+            <td align="left">Coverage dependent</td>
+          </tr>
+          <tr>
+            <td align="left">CELLULAR_5G</td>
+            <td align="left">10ms</td>
+            <td align="left">100-1000 Mbps</td>
+            <td align="left">Limited coverage</td>
+          </tr>
+          <tr>
+            <td align="left">WIRE_ETHERNET</td>
+            <td align="left">&lt;1ms</td>
+            <td align="left">1-100 Gbps</td>
+            <td align="left">Fixed installations</td>
+          </tr>
+          <tr>
+            <td align="left">WIRE_FIBER</td>
+            <td align="left">&lt;1ms</td>
+            <td align="left">1-100 Gbps</td>
+            <td align="left">Fixed installations</td>
+          </tr>
+          <tr>
+            <td align="left">WIFI</td>
+            <td align="left">5ms</td>
+            <td align="left">50-500 Mbps</td>
+            <td align="left">Short range</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    <section numbered="false" anchor="acknowledgements" toc="default">
+      <name>Acknowledgements</name>
+      <t> The authors thank the members of the tactical networking community for their input on
+        operational requirements and deployment considerations.
+      </t>
+    </section>
+  </back>
+</rfc>
