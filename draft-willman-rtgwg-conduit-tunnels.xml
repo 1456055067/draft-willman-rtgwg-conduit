@@ -6,12 +6,12 @@
   <!ENTITY wj "&#8288;">
 ]>
 <rfc xmlns:xi="http://www.w3.org/2001/XInclude" submissionType="IETF"
-  docName="draft-willman-conduit-tunnel-fabric-latest" category="std" ipr="trust200902" obsoletes=""
+  docName="draft-willman-rtgwg-conduit-tunnels-latest" category="std" ipr="trust200902" obsoletes=""
   updates=""
   xml:lang="en" symRefs="true" sortRefs="false" tocInclude="true" version="3">
   <front>
     <title>Underlay for IPsec Transport</title>
-    <seriesInfo name="Internet-Draft" value="draft-willman-conduit-tunnel-fabric-latest" />
+    <seriesInfo name="Internet-Draft" value="draft-willman-rtgwg-conduit-tunnels-latest" />
     <author fullname="John Edward Willman V" surname="Willman">
       <organization>Department of the Air Force</organization>
       <address>
