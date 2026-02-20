@@ -4,7 +4,9 @@
 
 Routing Area Working Group                                    J. E. W. V
 Internet-Draft                               Department of the Air Force
-Intended status: Standards Track                         30 January 2026
+Updates: draft-conduit-tunnel-fabric-01 (if              30 January 2026
+         approved)                                                      
+Intended status: Standards Track                                        
 Expires: 3 August 2026
 
 
