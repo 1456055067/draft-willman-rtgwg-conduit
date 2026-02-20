@@ -7,7 +7,7 @@
 ]>
 <rfc xmlns:xi="http://www.w3.org/2001/XInclude" submissionType="IETF"
   docName="draft-willman-rtgwg-conduit-tunnels-latest" category="std" ipr="trust200902" obsoletes=""
-  updates="draft-conduit-tunnel-fabric-01"
+  updates="draft-conduit-tunnel-fabric"
   xml:lang="en" symRefs="true" sortRefs="false" tocInclude="true" version="3">
   <front>
     <title>Underlay for IPsec Transport</title>
